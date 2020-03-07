@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"math"
 	"sync"
 	"time"
 
@@ -25,12 +24,6 @@ const (
 type BalanceItem = [2]float64
 type BookItem = [2]float64
 
-type Book struct {
-	Seq  float64
-	Asks *list.List
-	Bids *list.List
-}
-
 type Orderbook struct {
 	Seq  float64
 	TS   time.Time
@@ -46,16 +39,17 @@ type Client struct {
 	Workers      int
 	BookWorkers  int
 
-	balance       *sync.Map
+	balance       map[string]BalanceItem
 	books         map[string]*Orderbook
 	bookLock      sync.RWMutex
 	bookUpdates   chan []byte
 	deferedBooks  map[string]*list.List
 	incoming      chan []byte
-	orders        *sync.Map
+	orders        map[string]*Order
+	orderLock     sync.RWMutex
 	requests      map[string]string
 	subscriptions *list.List
-	tickers       map[string]Ticker
+	tickers       map[string]*Ticker
 	tickerLock    sync.RWMutex
 	ws            *websocket.Conn
 }
@@ -104,11 +98,11 @@ func NewClient() *Client {
 		bookUpdates:   make(chan []byte, 100),
 		requests:      make(map[string]string),
 		subscriptions: list.New(),
-		tickers:       make(map[string]Ticker),
+		tickers:       make(map[string]*Ticker),
 		books:         make(map[string]*Orderbook),
-		balance:       new(sync.Map),
+		balance:       make(map[string]BalanceItem),
 		deferedBooks:  make(map[string]*list.List),
-		orders:        new(sync.Map),
+		orders:        make(map[string]*Order),
 	}
 }
 
@@ -298,42 +292,45 @@ func (C *Client) CancelOrder(coid string) {
 }
 
 func (C *Client) Balance(symbol string) BalanceItem {
-	b, ok := C.balance.Load(symbol)
+	b, ok := C.balance[symbol]
 	if !ok {
 		return BalanceItem{0.0, 0.0}
-	}
-	return b.(BalanceItem)
-}
-
-func (C *Client) Book(symbol string) *Orderbook {
-	C.bookLock.RLock()
-	b, ok := C.books[symbol]
-	C.bookLock.RUnlock()
-	if !ok {
-		return nil
 	}
 	return b
 }
 
-func (C *Client) Order(coid string) Order {
-	o, ok := C.orders.Load(coid)
+func (C *Client) Book(symbol string) *Orderbook {
+	defer C.bookLock.RUnlock()
+
+	C.bookLock.RLock()
+	b, ok := C.books[symbol]
 	if !ok {
-		return Order{
-			Status: "unknown",
-		}
+		return nil
 	}
-	return o.(Order)
+	ret := Orderbook(*b)
+	return &ret
 }
 
-func (C *Client) Ticker(symbol string) Ticker {
+func (C *Client) Order(coid string) *Order {
+	defer C.orderLock.RUnlock()
+
+	C.orderLock.RLock()
+	o, ok := C.orders[coid]
+	if !ok {
+		return nil
+	}
+	ret := Order(*o)
+	return &ret
+}
+
+func (C *Client) Ticker(symbol string) *Ticker {
+	defer C.tickerLock.RUnlock()
+
 	C.tickerLock.RLock()
 	t, ok := C.tickers[symbol]
-	C.tickerLock.RUnlock()
 	if !ok {
-		return Ticker{
-			Bid: 0,
-			Ask: math.Inf(-1),
-		}
+		return nil
 	}
-	return t
+	ret := Ticker(*t)
+	return &ret
 }

@@ -186,8 +186,11 @@ func (C *Client) workerUpdateOrderbook() {
 }
 
 func (C *Client) handleOrdersReport(resp responseOrder) {
+	defer C.orderLock.Unlock()
+
 	coid := resp.ClientOrderID
-	order := Order{
+	C.orderLock.Lock()
+	C.orders[coid] = &Order{
 		ClientOrderID: coid,
 		Symbol:        resp.Symbol,
 		Side:          resp.Side,
@@ -200,27 +203,28 @@ func (C *Client) handleOrdersReport(resp responseOrder) {
 		TradeQuantity: stf(resp.TradeQuantity),
 		TradeFee:      stf(resp.TradeFee),
 	}
-	C.orders.Store(coid, order)
 }
 
 func (C *Client) handleSnapshotOrderbook(msg []byte) {
+	defer C.bookLock.Unlock()
+
 	resp := responseOrderbook{}
 	jsoniter.Get(msg, "params").ToVal(&resp)
 	book, symbol := parseBook(resp, C.MaxBookDepth)
 	C.bookLock.Lock()
 	C.books[symbol] = book
 	C.deferedBooks[symbol] = list.New()
-	C.bookLock.Unlock()
 }
 
 func (C *Client) handleUpdateOrderbook(msg []byte) {
+	defer C.bookLock.Unlock()
+
 	resp := responseOrderbook{}
 	jsoniter.Get(msg, "params").ToVal(&resp)
 	update, symbol := parseBook(resp, 0)
-	C.bookLock.RLock()
+	C.bookLock.Lock()
 	book, _ := C.books[symbol]
 	defered, _ := C.deferedBooks[symbol]
-	C.bookLock.RUnlock()
 	defered.PushBack(update)
 
 	if book == nil {
@@ -236,10 +240,6 @@ func (C *Client) handleUpdateOrderbook(msg []byte) {
 			u = u.Next()
 		}
 	}
-	C.bookLock.Lock()
-	C.books[symbol] = book
-	C.deferedBooks[symbol] = defered
-	C.bookLock.Unlock()
 }
 
 func (C *Client) handleGetActiveOrders(msg []byte) {
@@ -270,21 +270,22 @@ func (C *Client) handleGetBalance(msg []byte) {
 	b := make([]responseBalance, 0, 1)
 	jsoniter.Get(msg, "result").ToVal(&b)
 	for _, v := range b {
-		C.balance.Store(v.Currency, BalanceItem{
+		C.balance[v.Currency] = BalanceItem{
 			stf(v.Available),
 			stf(v.Reserved),
-		})
+		}
 	}
 }
 
 func (C *Client) handleTicker(msg []byte) {
+	defer C.tickerLock.Unlock()
+
 	t := responseTicker{}
 	jsoniter.Get(msg, "params").ToVal(&t)
 	C.tickerLock.Lock()
-	C.tickers[t.Symbol] = Ticker{
+	C.tickers[t.Symbol] = &Ticker{
 		Ask: stf(t.Ask),
 		Bid: stf(t.Bid),
 		TS:  time.Now(),
 	}
-	C.tickerLock.Unlock()
 }
